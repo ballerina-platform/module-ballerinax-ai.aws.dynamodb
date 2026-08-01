@@ -22,7 +22,7 @@ plugins {
     id 'io.ballerina.plugin'
 }
 
-description = 'Ai.aws.dynamodb - Ballerina'
+description = 'DynamoDB-backed short-term chat message store - Ballerina'
 
 def packageName = "ai.aws.dynamodb"
 def packageOrg = "ballerinax"
@@ -98,3 +98,5 @@ clean {
 build.dependsOn "generatePomFileForMavenPublication"
 publishToMavenLocal.dependsOn build
 publish.dependsOn build
+build.dependsOn "updateTomlFiles"
+build.finalizedBy "commitTomlFiles"

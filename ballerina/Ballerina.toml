@@ -5,12 +5,9 @@ name = "ai.aws.dynamodb"
 version = "1.0.0"
 license = ["Apache-2.0"]
 authors = ["Ballerina"]
-keywords = []
-# icon = "icon.png" # TODO: update icon.png
+keywords = ["Type/Connector", "Vendor/Amazon", "Area/AI & Machine Learning", "Area/Database", "Type/Short Term Memory Store", "Name/Amazon DynamoDB Short Term Memory Store"]
 repository = "https://github.com/ballerina-platform/module-ballerinax-ai.aws.dynamodb"
+icon="icon.png"
 
 [build-options]
 observabilityIncluded = true
-
-[platform.java21]
-graalvmCompatible = true

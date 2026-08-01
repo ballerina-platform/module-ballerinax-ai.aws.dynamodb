@@ -1,26 +1,79 @@
-# Ballerina Ai.aws.dynamodb connector
+# Ballerina DynamoDB-backed short-term chat message store connector
 
 [![Build](https://github.com/ballerina-platform/module-ballerinax-ai.aws.dynamodb/actions/workflows/ci.yml/badge.svg)](https://github.com/ballerina-platform/module-ballerinax-ai.aws.dynamodb/actions/workflows/ci.yml)
-[![GitHub Last Commit](https://img.shields.io/github/last-commit/ballerina-platform/module-ballerinax-ai.aws.dynamodb.svg)](https://github.com/ballerina-platform/module-ballerinax-ai.aws.dynamodb/commits/master)
-[![GitHub Issues](https://img.shields.io/github/issues/ballerina-platform/ballerina-library/module/ai.aws.dynamodb.svg?label=Open%20Issues)](https://github.com/ballerina-platform/ballerina-library/labels/module%ai.aws.dynamodb)
+[![GitHub Last Commit](https://img.shields.io/github/last-commit/ballerina-platform/module-ballerinax-ai.aws.dynamodb.svg)](https://github.com/ballerina-platform/module-ballerinax-ai.aws.dynamodb/commits/main)
+[![GitHub Issues](https://img.shields.io/github/issues/ballerina-platform/ballerina-library/module/ai.aws.dynamodb.svg?label=Open%20Issues)](https://github.com/ballerina-platform/ballerina-library/labels/module%2Fai.aws.dynamodb)
 
 ## Overview
 
-[//]: # (TODO: Add overview mentioning the purpose of the module, supported REST API versions, and other high-level details.)
+This module provides an Amazon DynamoDB-backed short-term memory store to use with AI messages (e.g., with AI agents, model providers, etc.).
 
-## Setup guide
+## Prerequisites
 
-[//]: # (TODO: Add detailed steps to obtain credentials and configure the module.)
+- An AWS account with DynamoDB access and credentials (access key ID and secret access key).
+- The credentials must allow the `DescribeTable`, `CreateTable`, `GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Query`, and `BatchWriteItem` actions.
 
 ## Quickstart
 
-[//]: # (TODO: Add a quickstart guide to demonstrate a basic functionality of the module, including sample code snippets.)
+Follow the steps below to use this store in your Ballerina application:
 
-## Examples
+1. Import the `ballerinax/ai.aws.dynamodb` module.
 
-The `Ai.aws.dynamodb` connector provides practical examples illustrating usage in various scenarios. Explore these [examples](https://github.com/module-ballerinax-ai.aws.dynamodb/tree/main/examples/), covering the following use cases:
+```ballerina
+import ballerinax/ai.aws.dynamodb;
+```
 
-[//]: # (TODO: Add examples)
+Optionally, import the `ballerina/ai` and/or `ballerinax/aws.dynamodb` module(s).
+
+```ballerina
+import ballerina/ai;
+import ballerinax/aws.dynamodb;
+```
+
+2. Create the short-term memory store by passing either the connection configuration or a `dynamodb:Client`.
+
+    i. Using the connection configuration
+
+    ```ballerina
+    import ballerina/ai;
+    import ballerinax/ai.aws.dynamodb;
+
+    configurable string accessKeyId = ?;
+    configurable string secretAccessKey = ?;
+    configurable string region = ?;
+
+    ai:ShortTermMemoryStore store = check new dynamodb:ShortTermMemoryStore({
+        awsCredentials: {accessKeyId, secretAccessKey},
+        region
+    });
+    ```
+
+    ii. Using an existing `dynamodb:Client`
+
+    ```ballerina
+    import ballerina/ai;
+    import ballerinax/aws.dynamodb;
+    import ballerinax/ai.aws.dynamodb as dynamodbStore;
+
+    configurable string accessKeyId = ?;
+    configurable string secretAccessKey = ?;
+    configurable string region = ?;
+
+    dynamodb:Client dynamodbClient = check new ({
+        awsCredentials: {accessKeyId, secretAccessKey},
+        region
+    });
+    ai:ShortTermMemoryStore store = check new dynamodbStore:ShortTermMemoryStore(dynamodbClient);
+    ```
+
+    Optionally, specify the maximum number of messages to store per key (`maxMessagesPerKey` - defaults to `20`) and the table-level configuration via `tableConfig` (a `dynamodb:TableConfig` record). `tableConfig` groups the DynamoDB-specific settings: the table name (`tableName` - defaults to `"chat_memory"`), the billing mode used when the connector creates the table (`billingMode` - defaults to `dynamodb:PAY_PER_REQUEST`), the read consistency model (`consistentReads`), and optional `tags` and `sseSpecification` applied at table creation.
+
+    ```ballerina
+    ai:ShortTermMemoryStore store = check new dynamodb:ShortTermMemoryStore({
+        awsCredentials: {accessKeyId, secretAccessKey},
+        region
+    }, 10, tableConfig = {tableName: "my_app_memory"});
+    ```
 
 ## Build from the source
 
@@ -35,11 +88,7 @@ The `Ai.aws.dynamodb` connector provides practical examples illustrating usage i
 
 2. Download and install [Ballerina Swan Lake](https://ballerina.io/).
 
-3. Download and install [Docker](https://www.docker.com/get-started).
-
-   > **Note**: Ensure that the Docker daemon is running before executing any tests.
-
-4. Export Github Personal access token with read package permissions as follows,
+3. Export a GitHub personal access token with `read:packages` permission as follows:
 
     ```bash
     export packageUser=<Username>
@@ -62,7 +111,7 @@ Execute the commands below to build from the source.
    ./gradlew clean test
    ```
 
-3. To build the without the tests:
+3. To build without the tests:
 
    ```bash
    ./gradlew clean build -x test
