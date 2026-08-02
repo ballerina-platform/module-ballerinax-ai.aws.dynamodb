@@ -330,8 +330,10 @@ public isolated class ShortTermMemoryStore {
     }
 
     # Removes all stored chat messages for a given key, including any pending human-in-the-loop
-    # approval checkpoint for that key, so clearing a session is atomic and an abandoned pause does
-    # not retain its whole history snapshot indefinitely.
+    # approval checkpoint for that key, so an abandoned pause does not retain its whole history
+    # snapshot indefinitely. The message deletion and the checkpoint deletion are separate
+    # DynamoDB calls and are not atomic; if the second call fails, the error is returned and the
+    # checkpoint is left in place for a retry.
     #
     # + key - The key associated with the memory
     # + return - nil on success, or an `Error` error if the operation fails
@@ -387,6 +389,12 @@ public isolated class ShortTermMemoryStore {
     }
 
     # Returns the pending human-in-the-loop approval for a session, if any.
+    #
+    # Uses `consistentReads` (defaults to `false`, eventually consistent). A `getCheckpoint` call
+    # made shortly after `putCheckpoint` can therefore return `()` even though a checkpoint was
+    # just stored. Set `consistentReads` to `true` if callers need read-after-write for this. Note
+    # `takeCheckpoint` is unaffected - `DeleteItem` (with `ReturnValues`) is always strongly
+    # consistent, regardless of `consistentReads`.
     #
     # + sessionId - The session to look up
     # + return - The pending approval, nil if none is pending, or an `Error` if the operation fails

@@ -99,6 +99,19 @@ isolated function transformFromInteractiveMessageDatabaseMessage(ChatInteractive
     return {role: ai:USER, content: transformedContent};
 }
 
+// Dispatches a `ChatMessageDatabaseMessage` of unknown-at-compile-time variant to the matching
+// specific converter. `getAllFromDynamoDb` never needed this: it already knows which variant it's
+// deserializing (from the sort key it just read), so it calls
+// `transformFromSystemMessageDatabaseMessage`/`transformFromInteractiveMessageDatabaseMessage`
+// directly. The checkpoint history below has no such context - `PendingApproval.history` is a
+// plain `ChatMessage[]` mixing system and interactive messages - so it needs this dispatcher.
+isolated function transformFromDatabaseMessage(ChatMessageDatabaseMessage dbMessage) returns ai:ChatMessage {
+    if dbMessage is ChatSystemMessageDatabaseMessage {
+        return transformFromSystemMessageDatabaseMessage(dbMessage);
+    }
+    return transformFromInteractiveMessageDatabaseMessage(<ChatInteractiveMessageDatabaseMessage>dbMessage);
+}
+
 isolated function createAIPrompt(string[] & readonly strings, anydata[] & readonly insertions)
         returns readonly & ai:Prompt => isolated object ai:Prompt {
     public final string[] & readonly strings = strings;
