@@ -85,6 +85,21 @@ const string COUNTER_MESSAGE_ID = "counter";
 // `counter` and before `system`, so `begins_with` cleanly isolates them.
 const string INTERACTIVE_ID_PREFIX = "msg#";
 
+// Partition-key prefix for a session's human-in-the-loop pause checkpoint. A checkpoint is kept
+// in a *different* partition than that session's messages (`system`/`counter`/interactive items,
+// all under partition key = the raw session key) rather than as another item in the same
+// partition, so a table-wide checkpoint read/write never contends with message traffic, at the
+// cost of `removeAll` needing an explicit second delete to clear it (see `removeAll`).
+// Reserved: a session key that itself begins with this literal prefix would collide with the
+// checkpoint partition for the session named by the remainder of that key, so every method that
+// turns a caller-supplied key into a partition key rejects one that begins with this prefix (see
+// `rejectReservedSessionKey`).
+const string CHECKPOINT_PARTITION_PREFIX = "checkpoint#";
+// The fixed sort key of the single checkpoint item under a checkpoint partition. The table's key
+// schema requires a sort key on every item; only one checkpoint is ever stored per session, so a
+// constant value is sufficient to complete the composite key.
+const string CHECKPOINT_SORT_KEY = "checkpoint";
+
 // Zero-pad interactive sequence numbers to this width so that the lexicographic
 // order of the sort key matches the numeric insertion order.
 const int SEQUENCE_PAD_WIDTH = 19;
@@ -177,6 +192,7 @@ public isolated class ShortTermMemoryStore {
     # + return - A copy of the message if it was specified, nil if it was not, or an
     # `Error` error if the operation fails
     public isolated function getChatSystemMessage(string key) returns ai:ChatSystemMessage|Error? {
+        check rejectReservedSessionKey(key);
         string|Error? systemMessageJson = self.getMessageBody(key, SYSTEM_MESSAGE_ID);
 
         if systemMessageJson is () {
@@ -201,6 +217,7 @@ public isolated class ShortTermMemoryStore {
     # + key - The key associated with the memory
     # + return - A copy of the messages, or an `Error` error if the operation fails
     public isolated function getChatInteractiveMessages(string key) returns ai:ChatInteractiveMessage[]|Error {
+        check rejectReservedSessionKey(key);
         // `getAllFromDynamoDb` already wraps its failures, so they are surfaced as-is here.
         final var allMessages = check self.getAllFromDynamoDb(key);
         if allMessages is readonly & ai:ChatInteractiveMessage[] {
@@ -216,6 +233,7 @@ public isolated class ShortTermMemoryStore {
     # + return - A copy of the messages, or an `Error` error if the operation fails
     public isolated function getAll(string key)
             returns [ai:ChatSystemMessage, ai:ChatInteractiveMessage...]|ai:ChatInteractiveMessage[]|Error {
+        check rejectReservedSessionKey(key);
         // `getAllFromDynamoDb` already wraps its failures, so they are surfaced as-is here.
         return self.getAllFromDynamoDb(key);
     }
@@ -228,6 +246,7 @@ public isolated class ShortTermMemoryStore {
     #             persisted; earlier system messages in the array are discarded.
     # + return - nil on success, or an `Error` if the operation fails
     public isolated function put(string key, ai:ChatMessage|ai:ChatMessage[] message) returns Error? {
+        check rejectReservedSessionKey(key);
         if message is ai:ChatMessage[] {
             return self.putAll(key, message);
         }
@@ -269,6 +288,7 @@ public isolated class ShortTermMemoryStore {
     # + return - nil on success or if there is no system chat message against the key,
     # or an `Error` error if the operation fails
     public isolated function removeChatSystemMessage(string key) returns Error? {
+        check rejectReservedSessionKey(key);
         dynamodb:ItemDeleteInput deleteInput = {
             TableName: self.tableName,
             Key: itemKey(key, SYSTEM_MESSAGE_ID)
@@ -287,6 +307,7 @@ public isolated class ShortTermMemoryStore {
     # if not provided, removes all messages
     # + return - nil on success, or an `Error` error if the operation fails
     public isolated function removeChatInteractiveMessages(string key, int? count = ()) returns Error? {
+        check rejectReservedSessionKey(key);
         if count is int && count < 0 {
             return error("Invalid count: must be >= 0");
         }
@@ -308,17 +329,23 @@ public isolated class ShortTermMemoryStore {
         }
     }
 
-    # Removes all stored chat messages for a given key.
+    # Removes all stored chat messages for a given key, including any pending human-in-the-loop
+    # approval checkpoint for that key, so clearing a session is atomic and an abandoned pause does
+    # not retain its whole history snapshot indefinitely.
     #
     # + key - The key associated with the memory
     # + return - nil on success, or an `Error` error if the operation fails
     public isolated function removeAll(string key) returns Error? {
+        check rejectReservedSessionKey(key);
         do {
             string[] sortIds = check self.querySortIds(key, false);
             check self.deleteItems(key, sortIds);
         } on fail Error err {
             return error("Failed to delete chat messages: " + err.message(), err);
         }
+        // The checkpoint lives under a different partition key (see `CHECKPOINT_PARTITION_PREFIX`),
+        // so it is not covered by the delete above and must be cleared explicitly.
+        return self.removeCheckpoint(key);
     }
 
     # Checks if the memory store is full for a given key.
@@ -326,6 +353,7 @@ public isolated class ShortTermMemoryStore {
     # + key - The key associated with the memory
     # + return - true if the memory store is full, false otherwise, or an `Error` error if the operation fails
     public isolated function isFull(string key) returns boolean|Error {
+        check rejectReservedSessionKey(key);
         int count = check self.countInteractiveMessages(key);
         return count >= self.maxMessagesPerKey;
     }
@@ -335,6 +363,102 @@ public isolated class ShortTermMemoryStore {
     # + return - The configured capacity of the message store per key
     public isolated function getCapacity() returns int {
         return self.maxMessagesPerKey;
+    }
+
+    # Stores (or replaces) the pending human-in-the-loop approval for its session.
+    #
+    # + approval - The pending approval to persist
+    # + return - nil on success, or an `Error` if the operation fails
+    public isolated function putCheckpoint(ai:PendingApproval approval) returns Error? {
+        check rejectReservedSessionKey(approval.sessionId);
+        ApprovalDatabaseMessage dbMessage = toApprovalDatabaseMessage(approval);
+        dynamodb:ItemCreateInput createInput = {
+            TableName: self.tableName,
+            Item: {
+                [PARTITION_KEY_ATTRIBUTE]: {S: CHECKPOINT_PARTITION_PREFIX + approval.sessionId},
+                [SORT_KEY_ATTRIBUTE]: {S: CHECKPOINT_SORT_KEY},
+                [BODY_ATTRIBUTE]: {S: dbMessage.toJsonString()}
+            }
+        };
+        dynamodb:ItemDescription|error result = self.dynamodbClient->createItem(createInput);
+        if result is error {
+            return error("Failed to store pending approval: " + result.message(), result);
+        }
+    }
+
+    # Returns the pending human-in-the-loop approval for a session, if any.
+    #
+    # + sessionId - The session to look up
+    # + return - The pending approval, nil if none is pending, or an `Error` if the operation fails
+    public isolated function getCheckpoint(string sessionId) returns ai:PendingApproval?|Error {
+        check rejectReservedSessionKey(sessionId);
+        dynamodb:ItemGetInput getInput = {
+            TableName: self.tableName,
+            Key: checkpointKey(sessionId),
+            ConsistentRead: self.consistentReads,
+            ProjectionExpression: "#body",
+            ExpressionAttributeNames: {"#body": BODY_ATTRIBUTE}
+        };
+        dynamodb:ItemGetOutput|error result = self.dynamodbClient->getItem(getInput);
+        if result is error {
+            return error("Failed to retrieve pending approval: " + result.message(), result);
+        }
+        map<dynamodb:AttributeValue>? item = result?.Item;
+        if item is () {
+            return ();
+        }
+        string body = check extractBody(item);
+        ApprovalDatabaseMessage|error dbMessage = body.fromJsonStringWithType();
+        if dbMessage is error {
+            return error("Failed to parse pending approval from DynamoDB: " + dbMessage.message(), dbMessage);
+        }
+        return fromApprovalDatabaseMessage(dbMessage);
+    }
+
+    # Removes the pending human-in-the-loop approval for a session, if any.
+    #
+    # + sessionId - The session to clear
+    # + return - nil on success, or an `Error` if the operation fails
+    public isolated function removeCheckpoint(string sessionId) returns Error? {
+        check rejectReservedSessionKey(sessionId);
+        dynamodb:ItemDeleteInput deleteInput = {
+            TableName: self.tableName,
+            Key: checkpointKey(sessionId)
+        };
+        dynamodb:ItemDescription|error result = self.dynamodbClient->deleteItem(deleteInput);
+        if result is error {
+            return error("Failed to remove pending approval: " + result.message(), result);
+        }
+    }
+
+    # Fetches and removes the pending human-in-the-loop approval for a session. Uses DynamoDB's
+    # `ReturnValues: ALL_OLD` on the delete so the fetch-and-remove happens as a single atomic
+    # operation - a concurrent duplicate resume for the same session cannot also claim and execute
+    # the same approved tool call.
+    #
+    # + sessionId - The session to claim
+    # + return - The claimed pending approval, nil if none was pending, or an `Error` if the operation fails
+    public isolated function takeCheckpoint(string sessionId) returns ai:PendingApproval?|Error {
+        check rejectReservedSessionKey(sessionId);
+        dynamodb:ItemDeleteInput deleteInput = {
+            TableName: self.tableName,
+            Key: checkpointKey(sessionId),
+            ReturnValues: dynamodb:ALL_OLD
+        };
+        dynamodb:ItemDescription|error result = self.dynamodbClient->deleteItem(deleteInput);
+        if result is error {
+            return error("Failed to claim pending approval: " + result.message(), result);
+        }
+        map<dynamodb:AttributeValue>? attributes = result?.Attributes;
+        if attributes is () {
+            return ();
+        }
+        string body = check extractBody(attributes);
+        ApprovalDatabaseMessage|error dbMessage = body.fromJsonStringWithType();
+        if dbMessage is error {
+            return error("Failed to parse pending approval from DynamoDB: " + dbMessage.message(), dbMessage);
+        }
+        return fromApprovalDatabaseMessage(dbMessage);
     }
 
     // Ensures the backing table exists and is active, creating it if necessary.
@@ -732,6 +856,25 @@ isolated function itemKey(string key, string sortId) returns map<dynamodb:Attrib
     [PARTITION_KEY_ATTRIBUTE]: {S: key},
     [SORT_KEY_ATTRIBUTE]: {S: sortId}
 };
+
+// Builds the composite key of a session's checkpoint item, under its own reserved partition
+// (see `CHECKPOINT_PARTITION_PREFIX`).
+isolated function checkpointKey(string sessionId) returns map<dynamodb:AttributeValue> =>
+    itemKey(CHECKPOINT_PARTITION_PREFIX + sessionId, CHECKPOINT_SORT_KEY);
+
+// Rejects a session key that would collide with a *different* session's checkpoint partition.
+// Messages use the raw session key as their partition key unprefixed, so a message session key
+// equal to `CHECKPOINT_PARTITION_PREFIX + x` would share a partition with session `x`'s
+// checkpoint - and since a query/delete is keyed purely by the partition-key string, this applies
+// equally to reads and deletes, not just writes. Called at the top of every method (message-side
+// and checkpoint-side alike) that turns a caller-supplied key into a partition key, so a session
+// name can never actually collide with another session's checkpoint.
+isolated function rejectReservedSessionKey(string key) returns Error? {
+    if key.startsWith(CHECKPOINT_PARTITION_PREFIX) {
+        return error(string `Invalid session key: '${key}'. Session keys must not start with `
+            + string `'${CHECKPOINT_PARTITION_PREFIX}', which is reserved for checkpoint storage.`);
+    }
+}
 
 // Extracts the JSON body string from a stored item.
 isolated function extractBody(map<dynamodb:AttributeValue> item) returns string|Error {
