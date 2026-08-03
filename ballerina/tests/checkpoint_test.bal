@@ -20,7 +20,6 @@
 
 import ballerina/ai;
 import ballerina/test;
-import ballerinax/aws.dynamodb;
 
 final readonly & ai:ChatFunctionMessage LOOKUP_ORDER_RESULT = {
     role: "function",
