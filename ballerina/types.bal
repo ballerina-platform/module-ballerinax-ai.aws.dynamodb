@@ -15,6 +15,7 @@
 // under the License.
 
 import ballerina/ai;
+import ballerina/time;
 
 type Prompt record {|
     string[] strings;
@@ -98,8 +99,105 @@ isolated function transformFromInteractiveMessageDatabaseMessage(ChatInteractive
     return {role: ai:USER, content: transformedContent};
 }
 
+// Dispatches a `ChatMessageDatabaseMessage` of unknown-at-compile-time variant to the matching
+// specific converter. `getAllFromDynamoDb` never needed this: it already knows which variant it's
+// deserializing (from the sort key it just read), so it calls
+// `transformFromSystemMessageDatabaseMessage`/`transformFromInteractiveMessageDatabaseMessage`
+// directly. The checkpoint history below has no such context - `PendingApproval.history` is a
+// plain `ChatMessage[]` mixing system and interactive messages - so it needs this dispatcher.
+isolated function transformFromDatabaseMessage(ChatMessageDatabaseMessage dbMessage) returns ai:ChatMessage {
+    if dbMessage is ChatSystemMessageDatabaseMessage {
+        return transformFromSystemMessageDatabaseMessage(dbMessage);
+    }
+    return transformFromInteractiveMessageDatabaseMessage(<ChatInteractiveMessageDatabaseMessage>dbMessage);
+}
+
 isolated function createAIPrompt(string[] & readonly strings, anydata[] & readonly insertions)
         returns readonly & ai:Prompt => isolated object ai:Prompt {
     public final string[] & readonly strings = strings;
     public final anydata[] & readonly insertions = insertions;
+};
+
+// A single reasoning-action cycle of a paused agent run, in its database-storable form.
+// `history` uses `ChatMessageDatabaseMessage` for the same reason `PendingApproval.history` does
+// (see `ApprovalDatabaseMessage`); `output` narrows `ai:Error` to a `string` summary, since
+// `ai:Error` values are not JSON-serializable.
+type IterationDatabaseMessage record {|
+    ChatMessageDatabaseMessage[] history;
+    (ai:ChatAssistantMessage|ai:ChatFunctionMessage|string)[] output;
+    time:Utc startTime;
+    time:Utc endTime;
+|};
+
+// The database-storable form of `ai:PendingApproval`. Identical to `ai:PendingApproval` except
+// `history`/`iterations[*].history` are converted to `ChatMessageDatabaseMessage[]`, since
+// `ai:ChatMessage`'s `Prompt`-typed content is not directly JSON-serializable (same problem
+// `ChatMessageDatabaseMessage` already solves for stored chat messages).
+type ApprovalDatabaseMessage record {|
+    string sessionId;
+    string executionId;
+    int iterationsUsed;
+    ChatMessageDatabaseMessage[] history;
+    int historyPrefixLength;
+    IterationDatabaseMessage[] iterations;
+    ai:FunctionCall[] toolCalls;
+    time:Utc startTime;
+    ai:FunctionCall[] originalBatch;
+    ai:ApprovalRequest[] pendingRequests;
+    ai:HumanResponse?[] decisions;
+|};
+
+isolated function toStoredIterationOutput(ai:ChatAssistantMessage|ai:ChatFunctionMessage|ai:Error output)
+        returns ai:ChatAssistantMessage|ai:ChatFunctionMessage|string {
+    if output is ai:Error {
+        error? cause = output.cause();
+        return cause is error ? string `${output.message()} (cause: ${cause.message()})` : output.message();
+    }
+    return output;
+}
+
+isolated function fromStoredIterationOutput(ai:ChatAssistantMessage|ai:ChatFunctionMessage|string stored)
+        returns ai:ChatAssistantMessage|ai:ChatFunctionMessage|ai:Error =>
+    stored is string ? error ai:Error(stored) : stored;
+
+isolated function toIterationDatabaseMessage(ai:Iteration iteration) returns IterationDatabaseMessage => {
+    history: from ai:ChatMessage message in iteration.history select transformToDatabaseMessage(message),
+    output: from var output in iteration.output select toStoredIterationOutput(output),
+    startTime: iteration.startTime,
+    endTime: iteration.endTime
+};
+
+isolated function fromIterationDatabaseMessage(IterationDatabaseMessage dbMessage) returns ai:Iteration => {
+    history: from ChatMessageDatabaseMessage message in dbMessage.history select transformFromDatabaseMessage(message),
+    output: from var output in dbMessage.output select fromStoredIterationOutput(output),
+    startTime: dbMessage.startTime,
+    endTime: dbMessage.endTime
+};
+
+isolated function toApprovalDatabaseMessage(ai:PendingApproval approval) returns ApprovalDatabaseMessage => {
+    sessionId: approval.sessionId,
+    executionId: approval.executionId,
+    iterationsUsed: approval.iterationsUsed,
+    history: from ai:ChatMessage message in approval.history select transformToDatabaseMessage(message),
+    historyPrefixLength: approval.historyPrefixLength,
+    iterations: from ai:Iteration iteration in approval.iterations select toIterationDatabaseMessage(iteration),
+    toolCalls: approval.toolCalls,
+    startTime: approval.startTime,
+    originalBatch: approval.originalBatch,
+    pendingRequests: approval.pendingRequests,
+    decisions: approval.decisions
+};
+
+isolated function fromApprovalDatabaseMessage(ApprovalDatabaseMessage dbMessage) returns ai:PendingApproval => {
+    sessionId: dbMessage.sessionId,
+    executionId: dbMessage.executionId,
+    iterationsUsed: dbMessage.iterationsUsed,
+    history: from ChatMessageDatabaseMessage message in dbMessage.history select transformFromDatabaseMessage(message),
+    historyPrefixLength: dbMessage.historyPrefixLength,
+    iterations: from IterationDatabaseMessage iteration in dbMessage.iterations select fromIterationDatabaseMessage(iteration),
+    toolCalls: dbMessage.toolCalls,
+    startTime: dbMessage.startTime,
+    originalBatch: dbMessage.originalBatch,
+    pendingRequests: dbMessage.pendingRequests,
+    decisions: dbMessage.decisions
 };

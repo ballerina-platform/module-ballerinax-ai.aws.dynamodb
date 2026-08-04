@@ -384,6 +384,10 @@ isolated function getActiveStorage() returns FakeStorage {
 //   * `writeBatchItems` processes `PutRequest` and `DeleteRequest` entries one
 //     at a time, and reports every entry back as `UnprocessedItems` while a test
 //     has armed `setUnprocessedRounds` (so the store's retry/backoff loop runs).
+//   * `deleteItem` honours `ReturnValues: ALL_OLD`, reporting the deleted item's
+//     attributes as they were immediately before the delete (or omitting
+//     `Attributes` entirely if there was no item), so the store's atomic
+//     claim-and-remove (`takeCheckpoint`) can be tested against it.
 //
 // The class itself carries no fields — all state lives in `activeStorage`.
 isolated client class FakeDynamoDbClient {
@@ -519,7 +523,23 @@ isolated client class FakeDynamoDbClient {
             return error(string `ResourceNotFoundException: table '${input.TableName}'`);
         }
         [string, string] [pk, sk] = check extractCompositeKey(input.Key);
+        // Mirrors real DynamoDB: `ReturnValues: ALL_OLD` reports the item's attributes as they
+        // were immediately before deletion, and is omitted entirely if there was no such item -
+        // captured before `removeItem` below, since the delete-and-return must be observable as a
+        // single atomic step (this is what the store's `takeCheckpoint` depends on).
+        string? bodyBeforeDelete = input?.ReturnValues == dynamodb:ALL_OLD
+            ? storage.getItemBody(input.TableName, pk, sk)
+            : ();
         storage.removeItem(input.TableName, pk, sk);
+        if bodyBeforeDelete is string {
+            return {
+                Attributes: {
+                    [PARTITION_KEY_ATTRIBUTE]: {S: pk},
+                    [SORT_KEY_ATTRIBUTE]: {S: sk},
+                    [BODY_ATTRIBUTE]: {S: bodyBeforeDelete}
+                }
+            };
+        }
         return {};
     }
 
