@@ -395,19 +395,19 @@ isolated client class FakeDynamoDbClient {
     isolated function init() {
     }
 
-    remote isolated function describeTable(string tableName) returns dynamodb:TableDescription|error {
+    remote isolated function describeTable(string tableName) returns dynamodb:TableDescription|dynamodb:Error {
         FakeStorage storage = getActiveStorage();
         if storage.consumeOpFailure(OP_DESCRIBE_TABLE) {
             if storage.describeFailuresTransient() {
                 // A retryable control-plane failure: `waitForTableActive` must keep polling.
-                return error(string `ThrottlingException: rate exceeded for DescribeTable '${tableName}'`);
+                return fakeError(string `ThrottlingException: rate exceeded for DescribeTable '${tableName}'`);
             }
             // Deliberately neither a ResourceNotFoundException nor a retryable error: the store
             // must treat this failure as fatal instead of trying to create or to keep polling.
-            return error(string `AccessDeniedException: not authorized to DescribeTable '${tableName}'`);
+            return fakeError(string `AccessDeniedException: not authorized to DescribeTable '${tableName}'`);
         }
         if !storage.tableExists(tableName) || storage.consumePhantomAbsentDescribe() {
-            return error(string `ResourceNotFoundException: table '${tableName}' not found`);
+            return fakeError(string `ResourceNotFoundException: table '${tableName}' not found`);
         }
         // When a test has armed activation polls, report the table as still
         // creating so the store keeps polling in `waitForTableActive`.
@@ -418,26 +418,26 @@ isolated client class FakeDynamoDbClient {
     }
 
     remote isolated function createTable(dynamodb:TableCreateInput input)
-            returns dynamodb:TableDescription|error {
+            returns dynamodb:TableDescription|dynamodb:Error {
         FakeStorage storage = getActiveStorage();
         storage.recordCreateTableInput(input);
         if storage.consumeOpFailure(OP_CREATE_TABLE) {
-            return error(string `LimitExceededException: cannot create table '${input.TableName}'`);
+            return fakeError(string `LimitExceededException: cannot create table '${input.TableName}'`);
         }
         if !storage.createTableIfAbsent(input.TableName) {
-            return error(string `ResourceInUseException: table '${input.TableName}' already exists`);
+            return fakeError(string `ResourceInUseException: table '${input.TableName}' already exists`);
         }
         return {TableName: input.TableName, TableStatus: dynamodb:ACTIVE};
     }
 
     remote isolated function getItem(dynamodb:ItemGetInput input)
-            returns dynamodb:ItemGetOutput|error {
+            returns dynamodb:ItemGetOutput|dynamodb:Error {
         FakeStorage storage = getActiveStorage();
         if storage.consumeOpFailure(OP_GET_ITEM) {
-            return error("ProvisionedThroughputExceededException: GetItem throttled");
+            return fakeError("ProvisionedThroughputExceededException: GetItem throttled");
         }
         if !storage.tableExists(input.TableName) {
-            return error(string `ResourceNotFoundException: table '${input.TableName}'`);
+            return fakeError(string `ResourceNotFoundException: table '${input.TableName}'`);
         }
         [string, string] [pk, sk] = check extractCompositeKey(input.Key);
         string? body = storage.getItemBody(input.TableName, pk, sk);
@@ -453,50 +453,50 @@ isolated client class FakeDynamoDbClient {
     }
 
     remote isolated function createItem(dynamodb:ItemCreateInput input)
-            returns dynamodb:ItemDescription|error {
+            returns dynamodb:ItemDescription|dynamodb:Error {
         FakeStorage storage = getActiveStorage();
         if storage.consumeOpFailure(OP_CREATE_ITEM) {
-            return error("ProvisionedThroughputExceededException: PutItem throttled");
+            return fakeError("ProvisionedThroughputExceededException: PutItem throttled");
         }
         if !storage.tableExists(input.TableName) {
-            return error(string `ResourceNotFoundException: table '${input.TableName}'`);
+            return fakeError(string `ResourceNotFoundException: table '${input.TableName}'`);
         }
         [string, string] [pk, sk] = check extractCompositeKey(input.Item);
         dynamodb:AttributeValue? bodyAttr = input.Item[BODY_ATTRIBUTE];
         string? body = bodyAttr is () ? () : bodyAttr?.S;
         if body is () {
-            return error("ValidationException: missing Body attribute on PutItem");
+            return fakeError("ValidationException: missing Body attribute on PutItem");
         }
         storage.putItem(input.TableName, pk, sk, body);
         return {};
     }
 
     remote isolated function updateItem(dynamodb:ItemUpdateInput input)
-            returns dynamodb:ItemDescription|error {
+            returns dynamodb:ItemDescription|dynamodb:Error {
         FakeStorage storage = getActiveStorage();
         if storage.consumeOpFailure(OP_UPDATE_ITEM) {
-            return error("ProvisionedThroughputExceededException: UpdateItem throttled");
+            return fakeError("ProvisionedThroughputExceededException: UpdateItem throttled");
         }
         if !storage.tableExists(input.TableName) {
-            return error(string `ResourceNotFoundException: table '${input.TableName}'`);
+            return fakeError(string `ResourceNotFoundException: table '${input.TableName}'`);
         }
         [string, string] [pk, sk] = check extractCompositeKey(input.Key);
         string expr = (input.UpdateExpression ?: "").trim();
         if !regexp:isFullMatch(re `ADD\s+#seq\s+:delta`, expr) {
-            return error("FakeDynamoDbClient supports only the `ADD #seq :delta` UpdateExpression");
+            return fakeError("FakeDynamoDbClient supports only the `ADD #seq :delta` UpdateExpression");
         }
         map<dynamodb:AttributeValue>? exprValues = input?.ExpressionAttributeValues;
         if exprValues is () {
-            return error("ValidationException: missing ExpressionAttributeValues");
+            return fakeError("ValidationException: missing ExpressionAttributeValues");
         }
         dynamodb:AttributeValue? deltaAttr = exprValues[":delta"];
         string? deltaStr = deltaAttr is () ? () : deltaAttr?.N;
         if deltaStr is () {
-            return error("ValidationException: missing :delta value");
+            return fakeError("ValidationException: missing :delta value");
         }
         int|error delta = int:fromString(deltaStr);
         if delta is error {
-            return error("ValidationException: invalid :delta value", delta);
+            return fakeError("ValidationException: invalid :delta value", delta);
         }
 
         int newSeq = storage.incrementCounter(input.TableName, pk, sk, delta);
@@ -514,13 +514,13 @@ isolated client class FakeDynamoDbClient {
     }
 
     remote isolated function deleteItem(dynamodb:ItemDeleteInput input)
-            returns dynamodb:ItemDescription|error {
+            returns dynamodb:ItemDescription|dynamodb:Error {
         FakeStorage storage = getActiveStorage();
         if storage.consumeOpFailure(OP_DELETE_ITEM) {
-            return error("ProvisionedThroughputExceededException: DeleteItem throttled");
+            return fakeError("ProvisionedThroughputExceededException: DeleteItem throttled");
         }
         if !storage.tableExists(input.TableName) {
-            return error(string `ResourceNotFoundException: table '${input.TableName}'`);
+            return fakeError(string `ResourceNotFoundException: table '${input.TableName}'`);
         }
         [string, string] [pk, sk] = check extractCompositeKey(input.Key);
         // Mirrors real DynamoDB: `ReturnValues: ALL_OLD` reports the item's attributes as they
@@ -544,30 +544,30 @@ isolated client class FakeDynamoDbClient {
     }
 
     remote isolated function query(dynamodb:QueryInput input)
-            returns stream<dynamodb:QueryOutput, error?>|error {
+            returns stream<dynamodb:QueryOutput, dynamodb:Error?>|dynamodb:Error {
         FakeStorage storage = getActiveStorage();
         if storage.consumeOpFailure(OP_QUERY) {
-            return error("ProvisionedThroughputExceededException: Query throttled");
+            return fakeError("ProvisionedThroughputExceededException: Query throttled");
         }
         if !storage.tableExists(input.TableName) {
-            return error(string `ResourceNotFoundException: table '${input.TableName}'`);
+            return fakeError(string `ResourceNotFoundException: table '${input.TableName}'`);
         }
         string expr = (input.KeyConditionExpression ?: "").trim();
         map<dynamodb:AttributeValue>? exprValues = input?.ExpressionAttributeValues;
         if exprValues is () {
-            return error("ValidationException: missing ExpressionAttributeValues");
+            return fakeError("ValidationException: missing ExpressionAttributeValues");
         }
         dynamodb:AttributeValue? pkAttr = exprValues[":pk"];
         string? pkValue = pkAttr is () ? () : pkAttr?.S;
         if pkValue is () {
-            return error("ValidationException: :pk missing or wrong type");
+            return fakeError("ValidationException: :pk missing or wrong type");
         }
         string? prefixFilter = ();
         if expr.includes("begins_with") {
             dynamodb:AttributeValue? prefAttr = exprValues[":prefix"];
             string? prefValue = prefAttr is () ? () : prefAttr?.S;
             if prefValue is () {
-                return error("ValidationException: :prefix missing or wrong type");
+                return fakeError("ValidationException: :prefix missing or wrong type");
             }
             prefixFilter = prefValue;
         }
@@ -599,14 +599,14 @@ isolated client class FakeDynamoDbClient {
             outputs.push({Item: item});
         }
         QueryOutputIterator iterator = new (outputs);
-        return new stream<dynamodb:QueryOutput, error?>(iterator);
+        return new stream<dynamodb:QueryOutput, dynamodb:Error?>(iterator);
     }
 
     remote isolated function writeBatchItems(dynamodb:BatchItemInsertInput input)
-            returns dynamodb:BatchItemInsertOutput|error {
+            returns dynamodb:BatchItemInsertOutput|dynamodb:Error {
         FakeStorage storage = getActiveStorage();
         if storage.consumeOpFailure(OP_WRITE_BATCH_ITEMS) {
-            return error("ProvisionedThroughputExceededException: BatchWriteItem throttled");
+            return fakeError("ProvisionedThroughputExceededException: BatchWriteItem throttled");
         }
         // Fault injection: while a test has armed unprocessed rounds, persist
         // nothing and echo every request straight back as `UnprocessedItems`, so
@@ -617,7 +617,7 @@ isolated client class FakeDynamoDbClient {
         }
         foreach [string, dynamodb:WriteRequest[]] [tableName, requests] in input.RequestItems.entries() {
             if !storage.tableExists(tableName) {
-                return error(string `ResourceNotFoundException: table '${tableName}'`);
+                return fakeError(string `ResourceNotFoundException: table '${tableName}'`);
             }
             foreach dynamodb:WriteRequest request in requests {
                 dynamodb:PutRequest? putRequest = request?.PutRequest;
@@ -627,7 +627,7 @@ isolated client class FakeDynamoDbClient {
                     dynamodb:AttributeValue? bodyAttr = putRequest.Item[BODY_ATTRIBUTE];
                     string? body = bodyAttr is () ? () : bodyAttr?.S;
                     if body is () {
-                        return error("ValidationException: missing Body attribute in PutRequest");
+                        return fakeError("ValidationException: missing Body attribute in PutRequest");
                     }
                     storage.putItem(tableName, pk, sk, body);
                 } else if deleteRequest is dynamodb:DeleteRequest {
@@ -649,7 +649,7 @@ class QueryOutputIterator {
         self.items = items;
     }
 
-    public isolated function next() returns record {|dynamodb:QueryOutput value;|}|error? {
+    public isolated function next() returns record {|dynamodb:QueryOutput value;|}|dynamodb:Error? {
         if self.index >= self.items.length() {
             return ();
         }
@@ -668,13 +668,25 @@ isolated function counterKey(string tableName, string pk) returns string =>
 isolated function partitionPrefix(string tableName, string pk) returns string =>
     tableName + COMPOSITE_KEY_DELIM + pk + COMPOSITE_KEY_DELIM;
 
-isolated function extractCompositeKey(map<dynamodb:AttributeValue> attrs) returns [string, string]|error {
+isolated function extractCompositeKey(map<dynamodb:AttributeValue> attrs) returns [string, string]|dynamodb:Error {
     dynamodb:AttributeValue? pkAttr = attrs[PARTITION_KEY_ATTRIBUTE];
     dynamodb:AttributeValue? skAttr = attrs[SORT_KEY_ATTRIBUTE];
     string? pkValue = pkAttr is () ? () : pkAttr?.S;
     string? skValue = skAttr is () ? () : skAttr?.S;
     if pkValue is () || skValue is () {
-        return error("ValidationException: missing partition or sort key");
+        return fakeError("ValidationException: missing partition or sort key");
     }
     return [pkValue, skValue];
+}
+
+// Builds an error shaped like the ones the `ballerinax/aws.dynamodb` client returns for a
+// service failure: the message is generic, while the exception name travels in the
+// `errorCode` detail. A leading `<ExceptionName>: ` in `message` is lifted into the details.
+isolated function fakeError(string message, error? cause = ()) returns dynamodb:Error {
+    int? separator = message.indexOf(": ");
+    string prefix = separator is int ? message.substring(0, separator) : "";
+    if separator is () || prefix.includes(" ") {
+        return error dynamodb:Error(message, cause);
+    }
+    return error dynamodb:Error(message, cause, errorCode = prefix, errorMessage = message.substring(separator + 2));
 }
