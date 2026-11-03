@@ -436,32 +436,23 @@ modules = [
 
 [[package]]
 org = "ballerinax"
-name = "aws.dynamodb"
-version = "2.3.0"
+name = "aws"
+version = "1.1.1"
 dependencies = [
-	{org = "ballerina", name = "crypto"},
-	{org = "ballerina", name = "http"},
-	{org = "ballerina", name = "io"},
-	{org = "ballerina", name = "jballerina.java"},
-	{org = "ballerina", name = "lang.array"},
-	{org = "ballerina", name = "lang.runtime"},
-	{org = "ballerina", name = "log"},
-	{org = "ballerina", name = "os"},
-	{org = "ballerina", name = "time"},
-	{org = "ballerina", name = "url"},
-	{org = "ballerinai", name = "observe"},
-	{org = "ballerinax", name = "client.config"}
-]
-modules = [
-	{org = "ballerinax", packageName = "aws.dynamodb", moduleName = "aws.dynamodb"}
+	{org = "ballerina", name = "jballerina.java"}
 ]
 
 [[package]]
 org = "ballerinax"
-name = "client.config"
-version = "1.0.1"
+name = "aws.dynamodb"
+version = "3.0.0"
 dependencies = [
 	{org = "ballerina", name = "http"},
-	{org = "ballerina", name = "oauth2"}
+	{org = "ballerina", name = "lang.runtime"},
+	{org = "ballerina", name = "os"},
+	{org = "ballerinai", name = "observe"},
+	{org = "ballerinax", name = "aws"}
 ]
-
+modules = [
+	{org = "ballerinax", packageName = "aws.dynamodb", moduleName = "aws.dynamodb"}
+]

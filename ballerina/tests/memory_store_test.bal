@@ -21,14 +21,12 @@
 // `test:mock(dynamodb:Client, fake)`, so no AWS credentials and no running
 // DynamoDB instance are required.
 //
-// Mocking is the only option here, not merely the convenient one: the
-// `ballerinax/aws.dynamodb` client derives its endpoint solely from the AWS
-// region (`https://dynamodb.<region>.amazonaws.com`) and its `ConnectionConfig`
-// exposes no endpoint override, so the tests cannot be pointed at DynamoDB
-// Local or any other local emulator.
+// Mocking keeps the suite hermetic: no test depends on network access, an AWS
+// account, or a local emulator.
 
 import ballerina/ai;
 import ballerina/test;
+import ballerinax/aws.auth;
 import ballerinax/aws.dynamodb;
 
 // -----------------------------------------------------------------------------
@@ -136,7 +134,7 @@ function testInitFromConnectionConfigBuildsItsOwnClient() returns error? {
     // Auto-create is switched off so init makes no control-plane call and the test
     // stays entirely offline — the client is built, never used.
     ShortTermMemoryStore store = check new ({
-        awsCredentials: {accessKeyId: "test-access-key", secretAccessKey: "test-secret-key"},
+        auth: {accessKeyId: "test-access-key", secretAccessKey: "test-secret-key"},
         region: "us-east-1"
     }, 7, {createTableIfNotExists: false});
 
@@ -145,13 +143,41 @@ function testInitFromConnectionConfigBuildsItsOwnClient() returns error? {
 }
 
 @test:Config {}
+function testInitFromConnectionConfigAcceptsDefaultCredentialChain() returns error? {
+    // The default credential provider chain (IAM roles on EC2, ECS, EKS, Lambda and
+    // similar) is selected through `auth:DEFAULT_CREDENTIALS`. Credentials are not
+    // resolved until a request is signed, so building the store stays offline.
+    ShortTermMemoryStore store = check new ({
+        auth: auth:DEFAULT_CREDENTIALS,
+        region: "us-east-1"
+    }, 7, {createTableIfNotExists: false});
+
+    test:assertEquals(store.getCapacity(), 7,
+        "A store built with the default credential chain must be fully initialized");
+}
+
+@test:Config {}
+function testErrorMentionsReadsTheExceptionNameFromErrorDetails() {
+    // The 3.x client reports a service failure with a generic message and carries the
+    // exception name in the `errorCode` detail, so matching must look past the message.
+    dynamodb:Error err = error dynamodb:Error("The DynamoDB operation failed with status 400",
+        httpStatusCode = 400, errorCode = "ResourceNotFoundException", errorMessage = "Requested resource not found");
+
+    test:assertTrue(errorMentions(err, "ResourceNotFound"),
+        "The exception name in the error details must be recognised");
+    test:assertTrue(isRetryableDescribeTableError(err),
+        "A ResourceNotFoundException from DescribeTable must be treated as retryable");
+    test:assertFalse(errorMentions(err, "ResourceInUse"), "An unrelated exception name must not match");
+}
+
+@test:Config {}
 function testInitFailsWhenConnectionConfigIsUnusable() returns error? {
-    // A region that cannot form a valid endpoint host makes the underlying
-    // `dynamodb:Client` constructor fail; the store must wrap that rather than
-    // panic or return a half-built store.
+    // A profile that does not exist in the credentials file makes the credential
+    // provider, and with it the underlying `dynamodb:Client` constructor, fail; the
+    // store must wrap that rather than panic or return a half-built store.
     Error|ShortTermMemoryStore result = new ({
-        awsCredentials: {accessKeyId: "test-access-key", secretAccessKey: "test-secret-key"},
-        region: "not a region"
+        auth: {profileName: "no-such-profile", credentialsFilePath: "tests/resources/no-such-credentials-file"},
+        region: "us-east-1"
     }, tableConfig = {createTableIfNotExists: false});
 
     test:assertTrue(result is Error, "An unusable connection config must fail init");

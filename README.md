@@ -10,7 +10,7 @@ This module provides an Amazon DynamoDB-backed short-term memory store to use wi
 
 ## Prerequisites
 
-- An AWS account with DynamoDB access and credentials (access key ID and secret access key).
+- An AWS account with DynamoDB access and credentials: an access key ID and secret access key, or an IAM role (see [Authentication](#authentication)).
 - The credentials must allow the `DescribeTable`, `CreateTable`, `GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Query`, and `BatchWriteItem` actions.
 
 ## Quickstart
@@ -43,7 +43,7 @@ import ballerinax/aws.dynamodb;
     configurable string region = ?;
 
     ai:ShortTermMemoryStore store = check new dynamodb:ShortTermMemoryStore({
-        awsCredentials: {accessKeyId, secretAccessKey},
+        auth: {accessKeyId, secretAccessKey},
         region
     });
     ```
@@ -60,7 +60,7 @@ import ballerinax/aws.dynamodb;
     configurable string region = ?;
 
     dynamodb:Client dynamodbClient = check new ({
-        awsCredentials: {accessKeyId, secretAccessKey},
+        auth: {accessKeyId, secretAccessKey},
         region
     });
     ai:ShortTermMemoryStore store = check new dynamodbStore:ShortTermMemoryStore(dynamodbClient);
@@ -70,10 +70,31 @@ import ballerinax/aws.dynamodb;
 
     ```ballerina
     ai:ShortTermMemoryStore store = check new dynamodb:ShortTermMemoryStore({
-        awsCredentials: {accessKeyId, secretAccessKey},
+        auth: {accessKeyId, secretAccessKey},
         region
     }, 10, tableConfig = {tableName: "my_app_memory"});
     ```
+
+### Authentication
+
+The `auth` field of the connection configuration accepts any credential source supported by `ballerinax/aws.dynamodb`: static credentials, an AWS profile, STS assume-role, web identity (OIDC), IAM Identity Center (SSO), an external credential process, or the default credential provider chain.
+
+When the application runs on AWS (for example on EC2, ECS, EKS, Lambda, or Amazon Bedrock AgentCore Runtime), use the default credential provider chain so the store picks up the temporary credentials of the attached IAM role. These credentials are refreshed automatically and no long-lived access keys need to be stored with the application.
+
+```ballerina
+import ballerina/ai;
+import ballerinax/ai.aws.dynamodb;
+import ballerinax/aws.auth;
+
+configurable string region = ?;
+
+ai:ShortTermMemoryStore store = check new dynamodb:ShortTermMemoryStore({
+    auth: auth:DEFAULT_CREDENTIALS,
+    region
+});
+```
+
+The role needs the `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:Query`, and `dynamodb:BatchWriteItem` permissions on the table. Add `dynamodb:DescribeTable` and `dynamodb:CreateTable` as well when `createTableIfNotExists` is `true` (the default). See the [`ballerinax/aws.dynamodb` documentation](https://central.ballerina.io/ballerinax/aws.dynamodb/latest) for the other supported credential sources.
 
 ## Build from the source
 
